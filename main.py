@@ -1,165 +1,113 @@
-from fastapi import FastAPI, HTTPException, Depends, status
-from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-from datetime import datetime, timedelta
-from jose import JWTError, jwt
-from passlib.context import CryptContext
+from typing import Optional
+import json
 
-# Secret key aur algorithm
-SECRET_KEY = "your-secret-key-here"  # Change karna hai production mein
-ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 30
-
-# Database simulation (temporary)
-fake_users_db = {
-    "user1": {
-        "username": "user1",
-        "full_name": "John Doe",
-        "email": "user1@example.com",
-        "hashed_password": "$2b$12$EixZaYVK1fsbw1ZfbX3OXePaWxn96p36WQoeG6Lruj3vjPGga31lW",  # password123
-        "disabled": False,
-    }
-}
-
-# Pydantic Models
-class User(BaseModel):
-    username: str
-    email: str = None
-    full_name: str = None
-    disabled: bool = None
-
-class UserInDB(User):
-    hashed_password: str
-
-class Token(BaseModel):
-    access_token: str
-    token_type: str
-
-class TokenData(BaseModel):
-    username: str = None
-
-# Password hashing
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
-
+# Simple version without JWT - pehle yeh test karein
 app = FastAPI()
 
-# Helper Functions
-def verify_password(plain_password, hashed_password):
-    return pwd_context.verify(plain_password, hashed_password)
+# Simple in-memory database
+users_db = {}
 
-def get_password_hash(password):
-    return pwd_context.hash(password)
+class UserRegister(BaseModel):
+    username: str
+    password: str
+    email: str
+    full_name: Optional[str] = None
 
-def get_user(db, username: str):
-    if username in db:
-        user_dict = db[username]
-        return UserInDB(**user_dict)
+class UserLogin(BaseModel):
+    username: str
+    password: str
 
-def authenticate_user(fake_db, username: str, password: str):
-    user = get_user(fake_db, username)
-    if not user:
-        return False
-    if not verify_password(password, user.hashed_password):
-        return False
-    return user
-
-def create_access_token(data: dict, expires_delta: timedelta = None):
-    to_encode = data.copy()
-    if expires_delta:
-        expire = datetime.utcnow() + expires_delta
-    else:
-        expire = datetime.utcnow() + timedelta(minutes=15)
-    to_encode.update({"exp": expire})
-    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
-    return encoded_jwt
-
-# Current user get karna
-async def get_current_user(token: str = Depends(oauth2_scheme)):
-    credentials_exception = HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Could not validate credentials",
-        headers={"WWW-Authenticate": "Bearer"},
-    )
-    try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        username: str = payload.get("sub")
-        if username is None:
-            raise credentials_exception
-        token_data = TokenData(username=username)
-    except JWTError:
-        raise credentials_exception
-    user = get_user(fake_users_db, username=token_data.username)
-    if user is None:
-        raise credentials_exception
-    return user
-
-async def get_current_active_user(current_user: User = Depends(get_current_user)):
-    if current_user.disabled:
-        raise HTTPException(status_code=400, detail="Inactive user")
-    return current_user
-
-# 1. Register Endpoint (Naya user banane ke liye)
-@app.post("/register/")
-async def register_user(username: str, password: str, email: str, full_name: str = None):
-    if username in fake_users_db:
-        raise HTTPException(status_code=400, detail="Username already registered")
-    
-    hashed_password = get_password_hash(password)
-    fake_users_db[username] = {
-        "username": username,
-        "full_name": full_name,
-        "email": email,
-        "hashed_password": hashed_password,
-        "disabled": False,
+# 1. Health check
+@app.get("/")
+def root():
+    return {
+        "message": "Auth API Working",
+        "status": "active",
+        "total_users": len(users_db)
     }
-    return {"message": "User registered successfully", "username": username}
 
-# 2. Login/Token Endpoint
-@app.post("/token", response_model=Token)
-async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends()):
-    user = authenticate_user(fake_users_db, form_data.username, form_data.password)
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect username or password",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    access_token = create_access_token(
-        data={"sub": user.username}, expires_delta=access_token_expires
-    )
-    return {"access_token": access_token, "token_type": "bearer"}
-
-# 3. Protected Routes
-@app.get("/users/me/", response_model=User)
-async def read_users_me(current_user: User = Depends(get_current_active_user)):
-    return current_user
-
-@app.get("/users/me/items/")
-async def read_own_items(current_user: User = Depends(get_current_active_user)):
-    return [{"item_id": 1, "owner": current_user.username}]
-
-# 4. Change Password
-@app.post("/change-password/")
-async def change_password(
-    current_password: str,
-    new_password: str,
-    current_user: User = Depends(get_current_active_user)
-):
-    user_data = fake_users_db[current_user.username]
+# 2. Simple register (without password hashing for now)
+@app.post("/register")
+def register(user: UserRegister):
+    if user.username in users_db:
+        raise HTTPException(status_code=400, detail="Username already exists")
     
-    if not verify_password(current_password, user_data["hashed_password"]):
-        raise HTTPException(status_code=400, detail="Current password is incorrect")
+    # For testing - store plain password (temporarily)
+    users_db[user.username] = {
+        "username": user.username,
+        "email": user.email,
+        "full_name": user.full_name,
+        "password": user.password,  # Temporary - don't do in production
+        "hashed_password": None
+    }
     
-    fake_users_db[current_user.username]["hashed_password"] = get_password_hash(new_password)
-    return {"message": "Password changed successfully"}
+    return {
+        "message": "User registered successfully",
+        "username": user.username,
+        "email": user.email,
+        "debug_info": {
+            "total_users": len(users_db),
+            "users": list(users_db.keys())
+        }
+    }
 
-# 5. Get All Users (Admin ke liye)
-@app.get("/users/")
-async def get_all_users(current_user: User = Depends(get_current_active_user)):
-    # Yahan pe aap check kar sakte hain ke user admin hai ya nahi
-    return {"users": list(fake_users_db.keys())}
+# 3. Simple login (without password hashing for now)
+@app.post("/login")
+def login(user: UserLogin):
+    if user.username not in users_db:
+        raise HTTPException(status_code=401, detail="Invalid username or password")
+    
+    stored_user = users_db[user.username]
+    
+    # Simple password check (temporary)
+    if user.password != stored_user["password"]:
+        raise HTTPException(status_code=401, detail="Invalid username or password")
+    
+    # Generate simple token (for testing)
+    token = f"simple_token_{user.username}_12345"
+    
+    return {
+        "message": "Login successful",
+        "username": user.username,
+        "token": token,
+        "token_type": "bearer"
+    }
+
+# 4. Get all users (for debugging)
+@app.get("/users")
+def get_users():
+    users_list = []
+    for username, data in users_db.items():
+        users_list.append({
+            "username": data["username"],
+            "email": data["email"],
+            "full_name": data["full_name"]
+        })
+    return {
+        "total": len(users_list),
+        "users": users_list
+    }
+
+# 5. Get user by username
+@app.get("/user/{username}")
+def get_user(username: str):
+    if username not in users_db:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    user_data = users_db[username].copy()
+    # Remove password from response
+    user_data.pop("password", None)
+    user_data.pop("hashed_password", None)
+    
+    return user_data
+
+# 6. Clear database (for testing)
+@app.delete("/clear")
+def clear_db():
+    users_db.clear()
+    return {"message": "Database cleared", "total_users": 0}
 
 if __name__ == "__main__":
     import uvicorn
